@@ -350,9 +350,9 @@ async function boot(){
   setInterval(()=>{ S.tick++; if(S.state.phase==="question"||S.state.phase==="lobby") render(true); hostAutoAdvance(); },500);
   setInterval(()=>{ if(!S.online || S.state.phase==="question"){ loadState(); } if(!S.online) loadPlayers(); },4000); // safety net if realtime drops
 }
-async function loadConfig(){ const {data,error}=await S.sb.from("config").select("data").eq("id",1).maybeSingle(); if(error){ S.authError=error.message; render(); return; } S.cfgLoaded=true; S.cfgExists=!!data; if(data){ S.cfg={...DEFAULT_CONFIG, ...data.data}; S.cfg.texts={...DEFAULT_CONFIG.texts, ...(data.data.texts||{})}; } applyBrand(); lastHtml=""; render(); maybeSeed(); }
-async function loadState(){ const {data}=await S.sb.from("state").select("data").eq("id",1).maybeSingle(); if(data){ S.state={rounds:{}, qIds:[], ...data.data}; lastHtml=""; render(); } }
-async function loadPlayers(){ const {data}=await S.sb.from("players").select("id,nick,joined_at,last_round,rounds"); if(data){ S.players=data.map(p=>({id:p.id, nick:p.nick, joinedAt:p.joined_at, lastRound:p.last_round, rounds:p.rounds||{}})); lastHtml=""; render(); } }
+async function loadConfig(){ const {data,error}=await S.sb.from("config").select("data").eq("id",1).maybeSingle(); if(error){ S.authError=error.message; render(); return; } S.cfgLoaded=true; S.cfgExists=!!data; if(data){ S.cfg={...DEFAULT_CONFIG, ...data.data}; S.cfg.texts={...DEFAULT_CONFIG.texts, ...(data.data.texts||{})}; } applyBrand(); render(); maybeSeed(); }
+async function loadState(){ const {data}=await S.sb.from("state").select("data").eq("id",1).maybeSingle(); if(data){ S.state={rounds:{}, qIds:[], ...data.data}; render(); } }
+async function loadPlayers(){ const {data}=await S.sb.from("players").select("id,nick,joined_at,last_round,rounds"); if(data){ S.players=data.map(p=>({id:p.id, nick:p.nick, joinedAt:p.joined_at, lastRound:p.last_round, rounds:p.rounds||{}})); render(); } }
 let seeded=false;
 async function maybeSeed(){ if(seeded||!S.hostUser||!S.cfgLoaded||S.cfgExists||!S.sb) return; seeded=true; const c=clean({...DEFAULT_CONFIG, playerUrl: playerUrl()}); const {error}=await S.sb.rpc("host_save_config",{p_data:c}); if(error) toast("Could not write defaults: "+error.message); else { toast("First run: default questions loaded"); loadConfig(); } }
 async function hostRpc(action, payload){ const {data,error}=await S.sb.rpc("host_action",{p_action:action, p_payload:payload||{}}); if(error){ toast(error.message); return null; } if(data){ S.state={rounds:{}, qIds:[], ...data}; lastHtml=""; render(); } return data; }
@@ -564,7 +564,7 @@ app.addEventListener("click", async e=>{
 app.addEventListener("submit", async e=>{
   e.preventDefault();
   if(e.target.id==="joinform"){ const nick=$("#nick").value.trim().slice(0,18); if(!nick) return; S.nick=nick; ls.set("dd_nick",nick); S.answerBusy=true; lastHtml=""; render(); const {error}=await S.sb.rpc("join_game",{p_nick:nick}); S.answerBusy=false; if(error){ toast("Could not join: "+error.message); } else { S.joined=true; ls.set("dd_joined","1"); S.lastRoundSeen=S.state.roundId||null; toast("You're in!"); await loadPlayers(); } lastHtml=""; render(); }
-  if(e.target.id==="loginform"){ S.loginBusy=true; lastHtml=""; render(); const {error}=await S.sb.auth.signInWithPassword({email:$("#h_email").value.trim(), password:$("#h_pass").value}); if(error) toast(/invalid/i.test(error.message)?"Email or password not recognised":error.message); S.loginBusy=false; lastHtml=""; render(); }
+  if(e.target.id==="loginform"){ const email=$("#h_email").value.trim(), password=$("#h_pass").value; if(!email||!password) return toast("Enter the host email and password"); S.loginBusy=true; lastHtml=""; render(); const {error}=await S.sb.auth.signInWithPassword({email, password}); if(error) toast(/invalid/i.test(error.message)?"Email or password not recognised":error.message); S.loginBusy=false; lastHtml=""; render(); }
   if(e.target.id==="settingsform"){ const c=readSettingsForm(); await saveConfig(c); lastHtml=""; render(); }
   const rn=e.target.dataset.rename; if(rn){ const val=document.getElementById("rn_"+rn).value.trim().slice(0,18); if(!val) return; const {error}=await S.sb.rpc("host_player",{p_id:rn, p_action:"rename", p_nick:val}); if(error) toast(error.message); S.editNick=null; await loadPlayers(); lastHtml=""; render(); }
 });
