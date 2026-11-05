@@ -336,11 +336,13 @@ async function boot(){
 }
 async function checkHost(){ try{ const {data}=await S.sb.rpc("host_emails_list"); S.hosts=Array.isArray(data)?data:[]; S.isHost=S.hosts.length>0; }catch(e){ S.isHost=false; } lastHtml=""; render(); maybeSeed(); }
 async function loadConfig(){ const {data,error}=await S.sb.from("config").select("data").eq("id",1).maybeSingle(); if(error){ S.authError=error.message; render(); return; } S.cfgLoaded=true; S.cfgExists=!!data; if(data){ S.cfg={...DEFAULT_CONFIG, ...data.data}; S.cfg.texts={...DEFAULT_CONFIG.texts, ...(data.data.texts||{})}; if(!Array.isArray(S.cfg.rooms)||!S.cfg.rooms.length) S.cfg.rooms=clean(DEFAULT_CONFIG.rooms); } applyBrand(); render(); maybeSeed(); }
-async function loadRooms(){ const {data}=await S.sb.from("rooms").select("room,data"); if(data){ const m={}; for(const r of data){ m[r.room]={rounds:{}, qIds:[], ...r.data}; } S.rooms=m; setRoomState(); render(); } }
+async function loadRooms(){ const {data}=await S.sb.from("rooms").select("room,data"); if(data){ for(const r of data){ applyRoom(r.room, r.data||{}); } setRoomState(); render(); } }
 async function loadPlayers(){ const {data}=await S.sb.from("players").select("id,nick,joined_at,last_round,room,rounds"); if(data){ S.players=data.map(p=>({id:p.id, nick:p.nick, joinedAt:p.joined_at, lastRound:p.last_round, room:p.room, rounds:p.rounds||{}})); render(); } }
 let seeded=false;
 async function maybeSeed(){ if(seeded||!S.isHost||!S.cfgLoaded||S.cfgExists||!S.sb) return; seeded=true; const c=clean({...DEFAULT_CONFIG, playerUrl: baseUrl()}); const {error}=await S.sb.rpc("host_save_config",{p_data:c}); if(error) toast("Could not write defaults: "+error.message); else { toast("First run: default questions loaded"); loadConfig(); } }
-async function hostRpc(action, payload){ const {data,error}=await S.sb.rpc("host_action",{p_action:action, p_payload:payload||{}, p_room:S.room}); if(error){ toast(error.message); return null; } if(data){ S.rooms[S.room]={rounds:{}, qIds:[], ...data}; setRoomState(); lastHtml=""; render(); } return data; }
+function tagQ(payload){ const st=S.state||{}; return {...(payload||{}), roundId:st.roundId||null, qIndex:st.qIndex==null?null:st.qIndex}; }
+function applyRoom(room, data){ const cur=S.rooms[room]; if(cur && (cur.seq||0) > (data.seq||0)) return false; S.rooms[room]={rounds:{}, qIds:[], ...data}; return true; }
+async function hostRpc(action, payload){ const room=S.room; const {data,error}=await S.sb.rpc("host_action",{p_action:action, p_payload:payload||{}, p_room:room}); if(error){ toast(error.message); return null; } if(data){ if(applyRoom(room, data)){ setRoomState(); lastHtml=""; render(); } } return data; }
 
 /* ============================ RENDER ROUTER ============================ */
 let lastHtml="";
@@ -577,14 +579,16 @@ function readSettingsForm(){
   return cfg;
 }
 async function saveConfig(cfg){ const {error}=await S.sb.rpc("host_save_config",{p_data:clean(cfg)}); if(error) toast("Could not save: "+error.message); else { S.cfg=cfg; applyBrand(); toast("Settings saved"); } }
-function hostAutoAdvance(){ if(S.route!=="host"||!S.isHost||!S.sb) return; const st=S.state; if(st.phase==="question" && !st.pausedAt && now()>(st.qEndsAt||0)+1500){ const key=S.room+"/"+st.roundId+"/"+st.qIndex+"/"+st.qEndsAt; if(S.lastAutoReveal===key) return; S.lastAutoReveal=key; hostRpc("reveal"); } }
+async function anyAutoReveal(){ if(S.route==="host"||!S.sb) return; const st=S.state; if(st.phase!=="question"||st.pausedAt||now()<=(st.qEndsAt||0)+(S.route==="tv"?1500:3500+Math.random()*3000)) return; const key=S.room+"/"+st.roundId+"/"+st.qIndex+"/"+st.qEndsAt; if(S.lastAutoReveal===key) return; S.lastAutoReveal=key; const room=S.room; const {data}=await S.sb.rpc("auto_reveal",{p_room:room}); if(data&&applyRoom(room,data)){ setRoomState(); lastHtml=""; render(); } }
+function hostAutoAdvance(){ if(S.route!=="host"||!S.isHost||!S.sb){ anyAutoReveal(); return; } const st=S.state; if(st.phase==="question" && !st.pausedAt && now()>(st.qEndsAt||0)+1500){ const key=S.room+"/"+st.roundId+"/"+st.qIndex+"/"+st.qEndsAt; if(S.lastAutoReveal===key) return; S.lastAutoReveal=key; hostRpc("reveal", tagQ({auto:true})); } }
 function switchRoom(id){ S.room=id; setRoomState(); try{ const u=new URL(location.href); u.searchParams.set("room",id); history.replaceState(null,"",u.toString()); }catch(e){} lastHtml=""; render(); }
 async function hostAction(act, el){
   const st=S.state, cfg=S.cfg;
   if(act==="lobby"){ await hostRpc("lobby"); S.lastAutoReveal=null; }
   else if(act==="start"){ const setNo=setForRound(cfg, st.roundNo||1); const qs=questionsForRound(cfg,setNo); if(!qs.length) return toast("No questions enabled in set "+setNo); await hostRpc("start",{qIds:qs.map(q=>q.id), set:setNo}); }
-  else if(["cancel","reveal","board","next","pause","resume","abandon","clearprize"].includes(act)){ await hostRpc(act); if(act==="abandon") toast("Round abandoned (its answers no longer count)"); }
-  else if(act==="extend"){ await hostRpc("extend",{seconds:cfg.extendSec||5}); }
+  else if(["reveal","board","next","pause","resume"].includes(act)){ if(S.rpcBusy) return; S.rpcBusy=true; try{ await hostRpc(act, tagQ()); } finally{ S.rpcBusy=false; } }
+  else if(["cancel","abandon","clearprize"].includes(act)){ await hostRpc(act); if(act==="abandon") toast("Round abandoned (its answers no longer count)"); }
+  else if(act==="extend"){ await hostRpc("extend",tagQ({seconds:cfg.extendSec||5})); }
   else if(act==="prize"){ await hostRpc("prize", {}); }
   else if(act==="wipe"){ $("#confirmbox").hidden=false; }
   else if(act==="wipe-no"){ $("#confirmbox").hidden=true; }
